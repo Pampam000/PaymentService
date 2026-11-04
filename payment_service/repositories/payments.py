@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from payment_service.core.db import session_factory
 from payment_service.models.operations import Payment
 from payment_service.schemas.payment import OrderSnapshot, PaymentRecord, UnknownPayment
+from payment_service.repositories.webhooks import add_event
 
 
 def as_record(payment: Payment) -> PaymentRecord:
@@ -82,10 +83,12 @@ async def list_unknown_payments() -> list[UnknownPayment]:
 async def finish_reconciliation(payment_id, provider_id: str, confirmation_url: str | None, status: str) -> PaymentRecord | None:
     async with session_factory()() as session, session.begin():
         statement = (update(Payment)
-                     .where(Payment.id == payment_id, Payment.resolution_status == "unknown")
+                     .where(Payment.id == payment_id, Payment.resolution_status == "unknown", Payment.status == "pending")
                      .values(provider_payment_id=provider_id,
                              confirmation_url=func.coalesce(confirmation_url, Payment.confirmation_url),
                              status=status, resolution_status="known", updated_at=func.now())
                      .returning(Payment))
         payment = (await session.execute(statement)).scalar_one_or_none()
+        if payment and status in ("succeeded", "canceled"):
+            add_event(session, payment, status)
         return as_record(payment) if payment else None

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     admin_token: SecretStr = SecretStr("")
     backend_base_url: AnyHttpUrl | None = None
     order_lookup_token: SecretStr = SecretStr("")
+    payment_event_token: SecretStr = SecretStr("")
 
     @property
     def yoo_shop_id(self) -> str:
@@ -43,6 +44,11 @@ class Settings(BaseSettings):
             raise ValueError("BACKEND_BASE_URL must use HTTPS in production")
         if self.order_lookup_token.get_secret_value() in {backend_token, admin_token} and self.order_lookup_token.get_secret_value():
             raise ValueError("Order lookup token must differ from inbound tokens")
+        event_token = self.payment_event_token.get_secret_value()
+        if self.environment == "production" and not event_token:
+            raise ValueError("PAYMENT_EVENT_TOKEN is required in production")
+        if event_token and event_token in {backend_token, admin_token, self.order_lookup_token.get_secret_value()}:
+            raise ValueError("Payment event token must differ from other service tokens")
         if self.environment == "production" and not self.database_url.get_secret_value():
             raise ValueError("DATABASE_URL is required in production")
         if self.yoo_mode == "live" and self.environment != "production":
