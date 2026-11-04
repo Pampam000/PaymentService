@@ -1,0 +1,302 @@
+openapi: 3.1.0
+info:
+  title: PaymentService API
+  version: 0.1.0
+  description: Контракт для будущей реализации на Litestar. MVP с ЮKassa.
+servers:
+  - url: https://payment.internal.example
+    description: Пример внутреннего адреса
+paths:
+  /payments:
+    post:
+      summary: Создать платёж по заказу Backend
+      security: [{BackendToken: []}]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePayment' }
+            example: { order_id: 1fd35547-a8cf-4660-8231-93bed49b4c4a }
+      responses:
+        '201': { $ref: '#/components/responses/PaymentCreated' }
+        '200': { $ref: '#/components/responses/PaymentRepeated' }
+        '202': { $ref: '#/components/responses/PaymentUncertain' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /payments/{id}:
+    get:
+      summary: Получить платёж
+      security: [{BackendToken: []}]
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '200': { $ref: '#/components/responses/PaymentFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /payments/{id}/refunds:
+    post:
+      summary: Создать полный возврат успешного платежа
+      description: Сумма берётся из платежа; частичный возврат отсутствует в MVP.
+      security: [{AdminToken: []}]
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRefund' }
+            example: { reason: Возврат одобрен администратором }
+      responses:
+        '201': { $ref: '#/components/responses/RefundCreated' }
+        '200': { $ref: '#/components/responses/RefundRepeated' }
+        '202': { $ref: '#/components/responses/RefundUncertain' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /refunds/{id}:
+    get:
+      summary: Получить возврат
+      security: [{AdminToken: []}]
+      parameters:
+        - $ref: '#/components/parameters/RefundId'
+      responses:
+        '200': { $ref: '#/components/responses/RefundFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /webhooks/yookassa:
+    post:
+      summary: Принять уведомление ЮKassa
+      description: Тело недостоверно до проверки объекта через API ЮKassa. Повтор безопасен. При временной невозможности проверки вернуть 503 или сохранить событие для повтора.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/YooNotification' }
+            example:
+              type: notification
+              event: payment.succeeded
+              object: { id: 2d4a7a9c-000f-5000-9000-100000000001 }
+      responses:
+        '200':
+          description: Уведомление принято или уже обработано
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Accepted' }
+              example: { status: accepted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /health/live:
+    get:
+      summary: Процесс работает
+      responses:
+        '200': { $ref: '#/components/responses/Healthy' }
+  /health/ready:
+    get:
+      summary: Сервис и БД готовы
+      responses:
+        '200': { $ref: '#/components/responses/Healthy' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    BackendToken:
+      type: http
+      scheme: bearer
+      description: Отдельный служебный токен Backend; только создание и чтение платежа.
+    AdminToken:
+      type: http
+      scheme: bearer
+      description: Отдельный токен административного посредника Backend; роль человека проверяется Backend.
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 64 }
+      description: Повтор того же ключа и тела возвращает ту же операцию; иное тело даёт 409.
+    PaymentId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RefundId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    CreatePayment:
+      type: object
+      additionalProperties: false
+      required: [order_id]
+      properties:
+        order_id: { type: string, format: uuid }
+    CreateRefund:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    Payment:
+      type: object
+      required: [id, order_id, status, resolution_status, amount_kopecks, currency]
+      properties:
+        id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, succeeded, canceled] }
+        resolution_status: { type: string, enum: [known, unknown], description: unknown означает неясный результат обращения к ЮKassa; деньги и доступ ещё не подтверждены. }
+        amount_kopecks: { type: integer, minimum: 1 }
+        currency: { type: string, const: RUB }
+        confirmation_url:
+          type: [string, 'null']
+          format: uri
+          description: Только ссылка от ЮKassa; может отсутствовать до получения ответа или после завершения.
+    Refund:
+      type: object
+      required: [id, payment_id, status, resolution_status, amount_kopecks, currency]
+      properties:
+        id: { type: string, format: uuid }
+        payment_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, succeeded, canceled] }
+        resolution_status: { type: string, enum: [known, unknown] }
+        amount_kopecks: { type: integer, minimum: 1 }
+        currency: { type: string, const: RUB }
+    Error:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        request_id: { type: string, format: uuid }
+    Accepted:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: accepted }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: ok }
+    YooNotification:
+      type: object
+      required: [type, event, object]
+      properties:
+        type: { type: string, const: notification }
+        event: { type: string }
+        object:
+          type: object
+          required: [id]
+          properties:
+            id: { type: string }
+  responses:
+    PaymentCreated:
+      description: Новый платёж
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Payment' }
+          example: &payment_example
+            id: cb9e27cf-542c-44f4-87fa-3b92fd704b03
+            order_id: 1fd35547-a8cf-4660-8231-93bed49b4c4a
+            status: pending
+            resolution_status: known
+            amount_kopecks: 99000
+            currency: RUB
+            confirmation_url: https://yookassa.ru/checkout/payments/example
+    PaymentRepeated:
+      description: Повтор того же ключа и тела
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Payment' }
+          example: *payment_example
+    PaymentUncertain:
+      description: Результат обращения к ЮKassa неясен; повторять только с тем же ключом
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Payment' }
+          example:
+            id: cb9e27cf-542c-44f4-87fa-3b92fd704b03
+            order_id: 1fd35547-a8cf-4660-8231-93bed49b4c4a
+            status: pending
+            resolution_status: unknown
+            amount_kopecks: 99000
+            currency: RUB
+            confirmation_url: null
+    PaymentFound:
+      description: Платёж найден
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Payment' }
+          example: *payment_example
+    RefundCreated:
+      description: Новый возврат
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Refund' }
+          example: &refund_example
+            id: b5bf1c64-6b18-47ac-8dc8-4b8f7cc272e5
+            payment_id: cb9e27cf-542c-44f4-87fa-3b92fd704b03
+            status: pending
+            resolution_status: known
+            amount_kopecks: 99000
+            currency: RUB
+    RefundRepeated:
+      description: Повтор того же ключа и тела
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Refund' }
+          example: *refund_example
+    RefundUncertain:
+      description: Результат обращения к ЮKassa неясен; повторять только с тем же ключом
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Refund' }
+          example:
+            id: b5bf1c64-6b18-47ac-8dc8-4b8f7cc272e5
+            payment_id: cb9e27cf-542c-44f4-87fa-3b92fd704b03
+            status: pending
+            resolution_status: unknown
+            amount_kopecks: 99000
+            currency: RUB
+    RefundFound:
+      description: Возврат найден
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Refund' }
+          example: *refund_example
+    Healthy:
+      description: Сервис работает
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Health' }
+          example: { status: ok }
+    BadRequest: { $ref: '#/components/responses/ErrorExample' }
+    Unauthorized: { $ref: '#/components/responses/ErrorExample' }
+    Forbidden: { $ref: '#/components/responses/ErrorExample' }
+    NotFound: { $ref: '#/components/responses/ErrorExample' }
+    Conflict: { $ref: '#/components/responses/ErrorExample' }
+    Unprocessable: { $ref: '#/components/responses/ErrorExample' }
+    TooLarge: { $ref: '#/components/responses/ErrorExample' }
+    Unavailable: { $ref: '#/components/responses/ErrorExample' }
+    ErrorExample:
+      description: Ошибка; конкретный code уточняется в реализации
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            code: request_failed
+            message: Операция не выполнена
+            request_id: 9c76e86b-965f-47c9-9654-e9998aa87e16
