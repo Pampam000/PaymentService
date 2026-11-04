@@ -81,3 +81,26 @@ class YooKassaTests(unittest.TestCase):
                 ProviderRefundCreate(id=uuid4(), amount_kopecks=101), "provider-1",
             ))
         self.assertEqual((result.provider_id, result.amount_kopecks), ("refund-1", 101))
+
+    def test_refund_uses_local_id_as_provider_key(self) -> None:
+        refund_id = uuid4()
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, json={
+                "id": "refund-1", "payment_id": "payment-1", "status": "pending",
+                "amount": {"value": "1.01", "currency": "RUB"},
+            })
+
+        real_client = httpx.AsyncClient
+        with patch("payment_service.adapters.yookassa.settings") as settings, patch(
+            "payment_service.adapters.yookassa.httpx.AsyncClient",
+            side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(respond), **kwargs),
+        ):
+            settings.yoo_shop_id = "shop"
+            settings.yoo_secret_key = SecretStr("secret-value")
+            asyncio.run(yookassa.create_refund(ProviderRefundCreate(id=refund_id, amount_kopecks=101), "payment-1"))
+        self.assertEqual(requests[0].headers["Idempotence-Key"], str(refund_id))
+        self.assertEqual(requests[0].url.path, "/v3/refunds")
+        self.assertIn(b'"value":"1.01"', requests[0].content)

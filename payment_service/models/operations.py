@@ -64,6 +64,9 @@ class Refund(Base):
     provider_refund_id: Mapped[str | None] = mapped_column(String(128))
     idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_create_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconcile_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    reconcile_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 

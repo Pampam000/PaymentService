@@ -11,6 +11,23 @@ class CreatePayment(BaseModel):
     order_id: UUID
 
 
+class CreateRefund(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+
+class RefundResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    payment_id: UUID
+    status: Literal["pending", "succeeded", "canceled"]
+    resolution_status: Literal["known", "unknown"]
+    amount_kopecks: StrictInt = Field(ge=1)
+    currency: Literal["RUB"]
+
+
 class OrderSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

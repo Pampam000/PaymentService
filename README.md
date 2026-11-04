@@ -109,3 +109,34 @@ Backend вызывает `GET /payments/{id}` с `Authorization: Bearer <BACKEND
 Примените миграцию `0005_outbox` командой `.venv/Scripts/python.exe -m payment_service.migrate upgrade`. Первый подтверждённый конечный статус платежа и событие для Backend записываются одной транзакцией. Повторный webhook не создаёт второе событие и не меняет конечный статус. Для успешного возврата создаётся отдельное событие `refund.succeeded`.
 
 Задайте `PAYMENT_EVENT_TOKEN`, отличный от остальных служебных токенов. Запускайте `.venv/Scripts/python.exe -m payment_service.deliver_events` периодически, например раз в минуту. Команда отправляет события на `POST {BACKEND_BASE_URL}/internal/billing/payment-events` и повторяет отправку с тем же `event_id` до ответа `200`; при `409` помечает событие для ручного разбора. Их ID выводит `.venv/Scripts/python.exe -m payment_service.deliver_events --review`. Backend должен сохранять `event_id` с уникальным ограничением и применять результат к заказу в той же транзакции; повтор того же `event_id` должен возвращать `200` без второй выдачи периода. До реализации этого маршрута в Backend события остаются в outbox.
+
+## Резервирование полного возврата (шаг 5.1)
+
+`POST /payments/{id}/refunds` принимает `ADMIN_TOKEN`, `Idempotency-Key` и JSON с необязательным `reason`. Сумма берётся из подтверждённого платежа. Запрос сохраняет локальный возврат `pending` и резервирует всю сумму; повтор с тем же ключом возвращает ту же запись. Другой ключ для уже зарезервированного платежа получает `409`.
+
+## Создание возврата (шаг 5.2)
+
+Примените миграцию `0006_refund_reconciliation` командой `.venv/Scripts/python.exe -m payment_service.migrate upgrade`. После локального резервирования сервис отправляет возврат в ЮKassa с ключом идемпотентности, равным локальному ID возврата. `GET /refunds/{id}` с `ADMIN_TOKEN` возвращает сохранённые статус, сумму и ID. Потерянный ответ оставляет `pending + unknown`; повтор `POST` не создаёт вторую операцию. Если ID ЮKassa неизвестен, повторное создание допускается только с прежним ключом в течение 24 часов; позже требуется ручная проверка.
+
+## Подтверждение возврата (шаг 5.3)
+
+Запускайте `.venv/Scripts/python.exe -m payment_service.reconcile_refunds` периодически и сверяйте выведенные ID той же командой с аргументом. Список включает все `pending` возвраты, в том числе с известным ID ЮKassa. Сверка запрашивает объект ЮKassa; окончательные `succeeded` и `canceled` фиксируются только после проверки суммы и исходного платежа. Подтверждённый `canceled` освобождает зарезервированную сумму, а `succeeded` создаёт одно событие для Backend. Уведомление `refund.succeeded` также проверяется через API ЮKassa перед изменением статуса. Период подписки меняет Backend после доставки события.
+
+## Проверка в тестовом магазине без Backend
+
+Укажите в локальном `.env` `APP_ENV=development`, `YOO_MODE=test`, `DATABASE_URL`, `YOO_TEST_SHOP_ID`, `YOO_TEST_SECRET_KEY` и `PAYMENT_RETURN_URL`. Примените миграции. Скрипт работает только с тестовым магазином и создаёт локальный тестовый заказ в БД PaymentService; Backend не вызывается.
+
+```powershell
+.venv/Scripts/python.exe -m payment_service.migrate upgrade
+.venv/Scripts/python.exe -m scripts.test_yookassa create 10000
+# Откройте выведенный Confirmation URL и оплатите тестовой картой.
+$paymentId = "UUID из строки Payment ID"
+.venv/Scripts/python.exe -m scripts.test_yookassa payment-status $paymentId
+.venv/Scripts/python.exe -m scripts.test_yookassa refund $paymentId
+$refundId = "UUID из строки Refund ID"
+.venv/Scripts/python.exe -m scripts.test_yookassa refund-status $refundId
+```
+
+Если последний статус ещё `pending`, повторите `refund-status` спустя минуту. Возврат считается завершённым только при `succeeded`. Тестовые платежи создают события в outbox; без Backend не запускайте доставку этих событий.
+
+Проверка платежа и возврата через этот скрипт с тестовым магазином ЮKassa выполнена успешно. Сквозной сценарий с реальным BotConstructorBackend ещё не проверяли: проверку роли администратора в Backend, создание платежа по его заказу и применение события о возврате к оплаченному периоду нужно проверить при интеграции сервисов.
