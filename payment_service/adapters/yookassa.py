@@ -1,12 +1,13 @@
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from payment_service.core.config import settings
 from payment_service.adapters.base import ProviderError
 from payment_service.schemas.payment import (
-    ProviderPaymentCreate, ProviderPaymentResult, ProviderRefundCreate,
-    YooAmount, YooConfirmation, YooPaymentPayload, YooRefundPayload,
+    ProviderPaymentCreate, ProviderPaymentResult, ProviderPaymentStatus, ProviderRefundCreate, ProviderRefundStatus,
+    YooAmount, YooConfirmation, YooPaymentDetails, YooPaymentPayload, YooRefundDetails, YooRefundPayload,
 )
 
 
@@ -56,17 +57,39 @@ async def create_payment(payment: ProviderPaymentCreate) -> ProviderPaymentResul
     return ProviderPaymentResult(provider_id=provider_id, confirmation_url=url)
 
 
-async def get_payment(provider_id: str) -> dict[str, Any]:
-    return await _request("GET", f"payments/{provider_id}")
+async def get_payment(provider_id: str) -> ProviderPaymentStatus:
+    try:
+        result = YooPaymentDetails.model_validate(await _request("GET", f"payments/{provider_id}"))
+    except ValidationError as exc:
+        raise YooKassaError("Invalid YooKassa payment") from exc
+    rubles, kopecks = result.amount.value.split(".")
+    return ProviderPaymentStatus(
+        provider_id=result.id, status=result.status,
+        amount_kopecks=int(rubles) * 100 + int(kopecks),
+        payment_id=result.metadata.payment_id,
+        confirmation_url=result.confirmation.confirmation_url if result.confirmation else None,
+    )
 
 
-async def create_refund(refund: ProviderRefundCreate, provider_payment_id: str) -> dict[str, Any]:
+def _refund_result(result: dict[str, Any]) -> ProviderRefundStatus:
+    try:
+        refund = YooRefundDetails.model_validate(result)
+        rubles, kopecks = refund.amount.value.split(".")
+        return ProviderRefundStatus(
+            provider_id=refund.id, provider_payment_id=refund.payment_id,
+            status=refund.status, amount_kopecks=int(rubles) * 100 + int(kopecks),
+        )
+    except ValidationError as exc:
+        raise YooKassaError("Invalid YooKassa refund") from exc
+
+
+async def create_refund(refund: ProviderRefundCreate, provider_payment_id: str) -> ProviderRefundStatus:
     payload = YooRefundPayload(
         payment_id=provider_payment_id,
         amount=YooAmount(value=f"{refund.amount_kopecks // 100}.{refund.amount_kopecks % 100:02d}"),
     )
-    return await _request("POST", "refunds", key=str(refund.id), payload=payload.model_dump(mode="json"))
+    return _refund_result(await _request("POST", "refunds", key=str(refund.id), payload=payload.model_dump(mode="json")))
 
 
-async def get_refund(provider_id: str) -> dict[str, Any]:
-    return await _request("GET", f"refunds/{provider_id}")
+async def get_refund(provider_id: str) -> ProviderRefundStatus:
+    return _refund_result(await _request("GET", f"refunds/{provider_id}"))

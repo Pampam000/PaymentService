@@ -1,13 +1,13 @@
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import httpx
 from pydantic import SecretStr
 
 from payment_service.adapters import yookassa
-from payment_service.schemas.payment import ProviderPaymentCreate
+from payment_service.schemas.payment import ProviderPaymentCreate, ProviderRefundCreate
 
 
 class YooKassaTests(unittest.TestCase):
@@ -54,3 +54,30 @@ class YooKassaTests(unittest.TestCase):
             with self.assertRaises(yookassa.YooKassaError) as raised:
                 asyncio.run(yookassa.get_payment("provider-1"))
         self.assertNotIn("secret-provider-detail", str(raised.exception))
+
+    def test_provider_objects_are_validated_before_return(self) -> None:
+        payment_id = uuid4()
+        payment = {
+            "id": "provider-1", "status": "succeeded",
+            "amount": {"value": "1.01", "currency": "RUB"},
+            "metadata": {"payment_id": str(payment_id)},
+        }
+        with patch("payment_service.adapters.yookassa._request", new=AsyncMock(return_value=payment)):
+            result = asyncio.run(yookassa.get_payment("provider-1"))
+        self.assertEqual((result.payment_id, result.amount_kopecks), (payment_id, 101))
+
+        with patch("payment_service.adapters.yookassa._request", new=AsyncMock(return_value={
+            **payment, "amount": {"value": "1.001", "currency": "RUB"},
+        })):
+            with self.assertRaises(yookassa.YooKassaError):
+                asyncio.run(yookassa.get_payment("provider-1"))
+
+        refund = {
+            "id": "refund-1", "payment_id": "provider-1", "status": "pending",
+            "amount": {"value": "1.01", "currency": "RUB"},
+        }
+        with patch("payment_service.adapters.yookassa._request", new=AsyncMock(return_value=refund)):
+            result = asyncio.run(yookassa.create_refund(
+                ProviderRefundCreate(id=uuid4(), amount_kopecks=101), "provider-1",
+            ))
+        self.assertEqual((result.provider_id, result.amount_kopecks), ("refund-1", 101))

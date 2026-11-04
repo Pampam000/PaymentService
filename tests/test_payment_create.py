@@ -6,11 +6,12 @@ from uuid import UUID, uuid4
 
 import httpx
 from pydantic import SecretStr
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from payment_service.core.db import database_available, session_factory
 from payment_service.main import app
 from payment_service.models.operations import Payment
+from payment_service.services.payments import PaymentUnavailable
 from payment_service.schemas.payment import OrderSnapshot
 from payment_service.schemas.payment import ProviderPaymentResult
 from payment_service.adapters.yookassa import YooKassaError
@@ -38,6 +39,10 @@ class CreatePaymentTests(unittest.TestCase):
                     self.assertEqual((first.status_code, second.status_code), (202, 202))
                     self.assertEqual(first.json()["id"], second.json()["id"])
                     self.assertEqual(first.json()["resolution_status"], "unknown")
+                    pending = await client.get(f"/payments/{first.json()['id']}", headers=headers)
+                    self.assertEqual(pending.status_code, 200)
+                    self.assertEqual(pending.json()["status"], "pending")
+                    self.assertEqual(pending.json()["resolution_status"], "unknown")
                     self.assertEqual((await client.post("/payments", json={"order_id": str(order_id)}, headers={**headers, "Idempotency-Key": str(uuid4())})).status_code, 409)
             finally:
                 async with session_factory()() as session, session.begin():
@@ -87,6 +92,22 @@ class CreatePaymentTests(unittest.TestCase):
                 self.assertEqual(first.json()["id"], repeated.json()["id"])
                 self.assertEqual(first.json()["amount_kopecks"], 12345)
                 self.assertEqual(first.json()["confirmation_url"], "https://yookassa.ru/pay/example")
+                payment_id = first.json()["id"]
+                found = await client.get(f"/payments/{payment_id}", headers=headers)
+                self.assertEqual(found.status_code, 200)
+                self.assertEqual(found.json(), first.json())
+                self.assertEqual(set(found.json()), {
+                    "id", "order_id", "status", "resolution_status",
+                    "amount_kopecks", "currency", "confirmation_url",
+                })
+                self.assertEqual(found.json()["status"], "pending")
+                self.assertEqual((await client.get(f"/payments/{payment_id}")).status_code, 401)
+                self.assertEqual((await client.get(f"/payments/{uuid4()}", headers=headers)).status_code, 404)
+                self.assertEqual((await client.get("/payments/not-a-uuid", headers=headers)).status_code, 404)
+                with patch("payment_service.api.payments.load_payment", new=AsyncMock(side_effect=PaymentUnavailable)):
+                    unavailable = await client.get(f"/payments/{payment_id}", headers=headers)
+                self.assertEqual(unavailable.status_code, 503)
+                self.assertEqual(unavailable.json()["code"], "database_unavailable")
                 simultaneous = await asyncio.gather(*[
                     client.post("/payments", json={"order_id": str(order_id)}, headers=headers)
                     for _ in range(5)
@@ -97,6 +118,11 @@ class CreatePaymentTests(unittest.TestCase):
                 self.assertEqual((await client.post("/payments", json={"order_id": str(order_id), "amount_kopecks": 1}, headers=headers)).status_code, 400)
                 self.assertEqual((await client.post("/payments", json={"order_id": ""}, headers=headers)).status_code, 400)
                 self.assertEqual((await client.post("/payments", json={"order_id": str(order_id)}, headers={"Idempotency-Key": key})).status_code, 401)
+                async with session_factory()() as session, session.begin():
+                    await session.execute(update(Payment).where(Payment.id == UUID(payment_id)).values(status="succeeded"))
+                succeeded = await client.get(f"/payments/{payment_id}", headers=headers)
+                self.assertEqual(succeeded.status_code, 200)
+                self.assertEqual(succeeded.json()["status"], "succeeded")
             async with session_factory()() as session:
                 rows = (await session.scalars(select(Payment).where(Payment.order_id == order_id))).all()
                 self.assertEqual(len(rows), 1)

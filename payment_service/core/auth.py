@@ -5,6 +5,7 @@ from litestar import Request
 from litestar.response import Response
 
 from payment_service.core.config import settings
+from payment_service.schemas.payment import ErrorResponse
 
 
 def authorize_internal_request(request: Request) -> Response | None:
@@ -21,7 +22,7 @@ def authorize_internal_request(request: Request) -> Response | None:
     expected = required.get_secret_value()
     if not expected or not separator or scheme.lower() != "bearer" or not compare_digest(supplied, expected):
         return Response(
-            {"code": "unauthorized", "message": "Invalid service credentials", "request_id": str(uuid4())},
+            ErrorResponse(code="unauthorized", message="Invalid service credentials", request_id=uuid4()),
             status_code=401,
         )
     return None

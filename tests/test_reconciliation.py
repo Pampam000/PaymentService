@@ -11,7 +11,7 @@ from payment_service.adapters.base import ProviderError
 from payment_service.core.db import database_available, session_factory
 from payment_service.models.operations import Payment
 from payment_service.repositories.payments import claim_reconciliation, finish_reconciliation, get_payment
-from payment_service.schemas.payment import ProviderPaymentResult
+from payment_service.schemas.payment import ProviderPaymentResult, ProviderPaymentStatus
 from payment_service.services.reconciliation import reconcile_payment
 
 
@@ -29,8 +29,8 @@ class ReconciliationTests(unittest.TestCase):
         create = AsyncMock(return_value=ProviderPaymentResult(
             provider_id="provider-1", confirmation_url="https://yookassa.ru/pay/1",
         ))
-        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=self.payment)), patch(
-            "payment_service.services.reconciliation.claim_reconciliation", new=AsyncMock(return_value=self.payment)
+        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=SimpleNamespace(**self.payment))), patch(
+            "payment_service.services.reconciliation.claim_reconciliation", new=AsyncMock(return_value=SimpleNamespace(**self.payment))
         ), patch("payment_service.services.reconciliation.finish_reconciliation", new=AsyncMock()) as finish, patch(
             "payment_service.services.reconciliation.get_adapter", return_value=SimpleNamespace(create_payment=create)
         ):
@@ -41,8 +41,8 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_unavailable_provider_remains_unknown(self) -> None:
         create = AsyncMock(side_effect=ProviderError("unavailable"))
-        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=self.payment)), patch(
-            "payment_service.services.reconciliation.claim_reconciliation", new=AsyncMock(return_value=self.payment)
+        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=SimpleNamespace(**self.payment))), patch(
+            "payment_service.services.reconciliation.claim_reconciliation", new=AsyncMock(return_value=SimpleNamespace(**self.payment))
         ), patch("payment_service.services.reconciliation.finish_reconciliation", new=AsyncMock()) as finish, patch(
             "payment_service.services.reconciliation.get_adapter", return_value=SimpleNamespace(create_payment=create)
         ):
@@ -51,7 +51,7 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_expired_key_requires_manual_review(self) -> None:
         self.payment["provider_create_started_at"] -= timedelta(hours=25)
-        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=self.payment)), patch(
+        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=SimpleNamespace(**self.payment))), patch(
             "payment_service.services.reconciliation.claim_reconciliation", new=AsyncMock()
         ) as claim:
             self.assertEqual(asyncio.run(reconcile_payment(self.payment_id)), "manual_review")
@@ -61,13 +61,12 @@ class ReconciliationTests(unittest.TestCase):
         self.payment["provider_payment_id"] = "provider-1"
         self.payment["provider_create_started_at"] -= timedelta(hours=25)
         create = AsyncMock()
-        get = AsyncMock(return_value={
-            "id": "provider-1", "status": "pending",
-            "amount": {"value": "1.01", "currency": "RUB"},
-            "metadata": {"payment_id": str(self.payment_id)},
-        })
-        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=self.payment)), patch(
-            "payment_service.services.reconciliation.claim_reconciliation", new=AsyncMock(return_value=self.payment)
+        get = AsyncMock(return_value=ProviderPaymentStatus(
+            provider_id="provider-1", status="pending", amount_kopecks=101,
+            payment_id=self.payment_id,
+        ))
+        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=SimpleNamespace(**self.payment))), patch(
+            "payment_service.services.reconciliation.claim_reconciliation", new=AsyncMock(return_value=SimpleNamespace(**self.payment))
         ), patch("payment_service.services.reconciliation.finish_reconciliation", new=AsyncMock()) as finish, patch(
             "payment_service.services.reconciliation.get_adapter",
             return_value=SimpleNamespace(create_payment=create, get_payment=get),
@@ -91,9 +90,9 @@ class ReconciliationTests(unittest.TestCase):
             try:
                 claimed = await asyncio.gather(*[claim_reconciliation(self.payment_id) for _ in range(3)])
                 self.assertEqual(sum(item is not None for item in claimed), 1)
-                self.assertEqual((await get_payment(self.payment_id))["reconcile_attempts"], 1)
+                self.assertEqual((await get_payment(self.payment_id)).reconcile_attempts, 1)
                 await finish_reconciliation(self.payment_id, "provider-1", "https://yookassa.ru/pay/1", "pending")
-                self.assertEqual((await get_payment(self.payment_id))["resolution_status"], "known")
+                self.assertEqual((await get_payment(self.payment_id)).resolution_status, "known")
                 self.assertIsNone(await claim_reconciliation(self.payment_id))
             finally:
                 async with session_factory()() as session, session.begin():

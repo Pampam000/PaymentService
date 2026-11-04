@@ -14,7 +14,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.payment_id is None:
         for payment in asyncio.run(list_unknown_payments()):
-            print(payment)
+            print(payment.model_dump())
     else:
         print(asyncio.run(reconcile_payment(args.payment_id)))
 
