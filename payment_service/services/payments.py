@@ -1,7 +1,7 @@
 from hashlib import sha256
 from uuid import UUID
 
-import asyncpg
+from sqlalchemy.exc import SQLAlchemyError
 
 from payment_service.repositories.payments import claim_provider_create, find_by_key, finish_provider_create, reserve_payment
 from payment_service.services.orders import get_order_snapshot
@@ -22,7 +22,7 @@ async def create_or_get_payment(key: str, order_id: UUID) -> tuple[dict, bool]:
     fingerprint = request_fingerprint(order_id)
     try:
         existing = await find_by_key(key)
-    except (asyncpg.PostgresError, OSError, TimeoutError, ValueError) as exc:
+    except (SQLAlchemyError, OSError, TimeoutError, ValueError) as exc:
         raise PaymentUnavailable from exc
     if existing:
         if existing["request_fingerprint"] != fingerprint:
@@ -32,13 +32,13 @@ async def create_or_get_payment(key: str, order_id: UUID) -> tuple[dict, bool]:
     order = await get_order_snapshot(order_id)
     try:
         payment, created = await reserve_payment(key, fingerprint, order)
-    except (asyncpg.PostgresError, OSError, TimeoutError, ValueError) as exc:
+    except (SQLAlchemyError, OSError, TimeoutError, ValueError) as exc:
         raise PaymentUnavailable from exc
     if payment is None or payment["request_fingerprint"] != fingerprint:
         raise PaymentConflict
     try:
         claimed = await claim_provider_create(payment["id"])
-    except (asyncpg.PostgresError, OSError, TimeoutError, ValueError) as exc:
+    except (SQLAlchemyError, OSError, TimeoutError, ValueError) as exc:
         raise PaymentUnavailable from exc
     if not claimed:
         return await find_by_key(key), False
@@ -48,7 +48,7 @@ async def create_or_get_payment(key: str, order_id: UUID) -> tuple[dict, bool]:
     except ProviderError:
         payment = await find_by_key(key)
         return payment, False
-    except (asyncpg.PostgresError, OSError, TimeoutError, ValueError) as exc:
+    except (SQLAlchemyError, OSError, TimeoutError, ValueError) as exc:
         raise PaymentUnavailable from exc
     return payment, created
 

@@ -2,15 +2,15 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-import asyncpg
 import httpx
 from pydantic import SecretStr
+from sqlalchemy import delete, select
 
-from payment_service.core.config import settings
-from payment_service.core.db import database_available
+from payment_service.core.db import database_available, session_factory
 from payment_service.main import app
+from payment_service.models.operations import Payment
 from payment_service.schemas.payment import OrderSnapshot
 from payment_service.schemas.payment import ProviderPaymentResult
 from payment_service.adapters.yookassa import YooKassaError
@@ -40,11 +40,8 @@ class CreatePaymentTests(unittest.TestCase):
                     self.assertEqual(first.json()["resolution_status"], "unknown")
                     self.assertEqual((await client.post("/payments", json={"order_id": str(order_id)}, headers={**headers, "Idempotency-Key": str(uuid4())})).status_code, 409)
             finally:
-                connection = await asyncpg.connect(settings.database_url.get_secret_value())
-                try:
-                    await connection.execute("DELETE FROM payments WHERE order_id = $1", order_id)
-                finally:
-                    await connection.close()
+                async with session_factory()() as session, session.begin():
+                    await session.execute(delete(Payment).where(Payment.order_id == order_id))
 
         provider = AsyncMock(side_effect=YooKassaError("lost response"))
         with patch("payment_service.core.auth.settings") as auth_settings, patch(
@@ -84,6 +81,7 @@ class CreatePaymentTests(unittest.TestCase):
                 self.assertEqual(len({r.json()["id"] for r in concurrent}), 1)
                 first = next(r for r in concurrent if r.status_code == 201)
                 self.assertEqual(first.status_code, 201, first.text)
+                self.assertEqual(UUID(first.json()["id"]).version, 7)
                 repeated = await client.post("/payments", json={"order_id": str(order_id)}, headers=headers)
                 self.assertEqual(repeated.status_code, 200)
                 self.assertEqual(first.json()["id"], repeated.json()["id"])
@@ -99,17 +97,15 @@ class CreatePaymentTests(unittest.TestCase):
                 self.assertEqual((await client.post("/payments", json={"order_id": str(order_id), "amount_kopecks": 1}, headers=headers)).status_code, 400)
                 self.assertEqual((await client.post("/payments", json={"order_id": ""}, headers=headers)).status_code, 400)
                 self.assertEqual((await client.post("/payments", json={"order_id": str(order_id)}, headers={"Idempotency-Key": key})).status_code, 401)
-            connection = await asyncpg.connect(settings.database_url.get_secret_value())
-            try:
-                rows = await connection.fetch("SELECT * FROM payments WHERE order_id = $1", order_id)
+            async with session_factory()() as session:
+                rows = (await session.scalars(select(Payment).where(Payment.order_id == order_id))).all()
                 self.assertEqual(len(rows), 1)
-                self.assertEqual(rows[0]["amount_kopecks"], 12345)
-                self.assertEqual(rows[0]["user_id"], order.user_id)
-                self.assertEqual(rows[0]["plan_id"], "basic")
-                self.assertEqual(rows[0]["period"], "month")
-            finally:
-                await connection.execute("DELETE FROM payments WHERE order_id = $1", order_id)
-                await connection.close()
+                self.assertEqual(rows[0].amount_kopecks, 12345)
+                self.assertEqual(rows[0].user_id, order.user_id)
+                self.assertEqual(rows[0].plan_id, "basic")
+                self.assertEqual(rows[0].period, "month")
+                await session.execute(delete(Payment).where(Payment.order_id == order_id))
+                await session.commit()
 
         provider = AsyncMock(return_value=ProviderPaymentResult(
             provider_id=provider_id, confirmation_url="https://yookassa.ru/pay/example",
