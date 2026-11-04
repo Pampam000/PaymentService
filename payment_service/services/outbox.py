@@ -1,6 +1,7 @@
 import httpx
 
 from payment_service.core.config import settings
+from payment_service.core.observability import increment_counter, log_operation
 from payment_service.repositories.outbox import claim_event, finish_event
 
 
@@ -22,12 +23,19 @@ async def deliver_pending(limit: int = 100) -> int:
                     headers={"Authorization": f"Bearer {token}"}, json=payload,
                 )
         except httpx.RequestError:
+            await increment_counter("delivery")
+            log_operation("event_delivery", "error", local_id=event_id, error_class="request_error")
             break
         if response.status_code == 200:
             await finish_event(event_id, delivered=True)
+            log_operation("event_delivery", "delivered", local_id=event_id)
             delivered += 1
         elif response.status_code == 409:
             await finish_event(event_id, review=True)
+            await increment_counter("delivery")
+            log_operation("event_delivery", "manual_review", local_id=event_id, error_class="conflict")
         else:
+            await increment_counter("delivery")
+            log_operation("event_delivery", "error", local_id=event_id, error_class="http_error")
             break
     return delivered

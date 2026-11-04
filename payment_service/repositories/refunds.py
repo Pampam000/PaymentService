@@ -80,6 +80,15 @@ async def list_pending_refunds() -> list[UUID]:
         return list(await session.scalars(select(Refund.id).where(Refund.status == "pending")))
 
 
+async def list_reconciliation_candidates(window: timedelta = timedelta(days=7)) -> list[UUID]:
+    async with session_factory()() as session:
+        return list(await session.scalars(
+            select(Refund.id).where(or_(Refund.status == "pending", Refund.resolution_status == "unknown",
+                                        Refund.updated_at >= func.now() - window))
+            .order_by(Refund.created_at)
+        ))
+
+
 async def claim_reconciliation(refund_id: UUID) -> bool:
     async with session_factory()() as session, session.begin():
         claimed = (await session.execute(

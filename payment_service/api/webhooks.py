@@ -1,4 +1,5 @@
 import json
+from uuid import uuid4
 
 from litestar import Request, post
 from litestar.response import Response
@@ -6,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from payment_service.api.payments import error
+from payment_service.core.observability import correlation_id, log_operation
 from payment_service.services.webhooks import verify_notification
 
 
@@ -26,6 +28,7 @@ class YooNotification(BaseModel):
 
 @post("/webhooks/yookassa", status_code=200)
 async def receive_yookassa_webhook(request: Request) -> Response:
+    correlation_id.set(uuid4())
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         return error(400, "invalid_request", "Expected JSON notification")
     body = bytearray()
@@ -47,5 +50,8 @@ async def receive_yookassa_webhook(request: Request) -> Response:
     except (SQLAlchemyError, OSError):
         return error(503, "database_unavailable", "Notification storage unavailable")
     if outcome == "unavailable":
+        log_operation(notification.event, "unavailable", error_class="verification_unavailable")
         return error(503, "verification_unavailable", "Notification verification unavailable")
+    log_operation(notification.event, outcome,
+                  provider_id=notification.object.id if outcome == "accepted" else None)
     return Response({"status": "accepted"}, status_code=200)

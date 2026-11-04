@@ -11,7 +11,17 @@ async def reconcile_payment(payment_id: UUID) -> str:
     payment = await get_payment(payment_id)
     if payment is None:
         return "not_found"
-    if payment.resolution_status != "unknown":
+    if payment.status != "pending":
+        if not payment.provider_payment_id:
+            return "manual_review"
+        try:
+            result = await get_adapter().get_payment(payment.provider_payment_id)
+        except ProviderError:
+            return "unknown"
+        if (result.provider_id != payment.provider_payment_id or result.payment_id != payment_id
+                or result.amount_kopecks != payment.amount_kopecks
+                or result.status != payment.status):
+            return "manual_review"
         return "known"
     # YooKassa keeps idempotence keys for 24 hours; never create after that window.
     can_retry_create = (payment.provider_create_started_at is not None

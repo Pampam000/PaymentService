@@ -48,7 +48,16 @@ async def reconcile_refund(refund_id: UUID) -> str:
         return "not_found"
     refund, provider_payment_id = details
     if refund.status != "pending":
-        return "known"
+        if not refund.provider_refund_id:
+            return "manual_review"
+        try:
+            result = await get_adapter().get_refund(refund.provider_refund_id)
+        except ProviderError:
+            return "unknown"
+        return "known" if (result.provider_id == refund.provider_refund_id
+                           and result.provider_payment_id == provider_payment_id
+                           and result.amount_kopecks == refund.amount_kopecks
+                           and result.status == refund.status) else "manual_review"
     if refund.resolution_status == "known" and refund.provider_refund_id is None:
         return "manual_review"
     can_retry = (refund.provider_create_started_at is not None and

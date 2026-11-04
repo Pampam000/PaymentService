@@ -81,3 +81,18 @@ class OutboxEvent(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     needs_review: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+
+
+class ReconciliationIssue(Base):
+    __tablename__ = "reconciliation_issues"
+
+    operation_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    operation_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class MetricCounter(Base):
+    __tablename__ = "metric_counters"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")

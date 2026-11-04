@@ -55,8 +55,8 @@ async def finish_provider_create(payment_id, provider_id: str, confirmation_url:
 async def claim_reconciliation(payment_id) -> PaymentRecord | None:
     async with session_factory()() as session, session.begin():
         statement = (update(Payment)
-                     .where(Payment.id == payment_id, Payment.resolution_status == "unknown",
-                            Payment.reconcile_attempts < 5,
+                     .where(Payment.id == payment_id, Payment.status == "pending",
+                            or_(Payment.provider_payment_id.is_not(None), Payment.reconcile_attempts < 5),
                             or_(Payment.reconcile_claimed_at.is_(None),
                                 Payment.reconcile_claimed_at < func.now() - timedelta(minutes=1)))
                      .values(reconcile_attempts=Payment.reconcile_attempts + 1,
@@ -80,10 +80,20 @@ async def list_unknown_payments() -> list[UnknownPayment]:
         return [UnknownPayment.model_validate(payment) for payment in payments]
 
 
+async def list_reconciliation_candidates(window: timedelta = timedelta(days=7)) -> list:
+    async with session_factory()() as session:
+        return list(await session.scalars(
+            select(Payment.id).where(or_(Payment.status == "pending", Payment.resolution_status == "unknown",
+                                         Payment.updated_at >= func.now() - window))
+            .order_by(Payment.created_at)
+        ))
+
+
 async def finish_reconciliation(payment_id, provider_id: str, confirmation_url: str | None, status: str) -> PaymentRecord | None:
     async with session_factory()() as session, session.begin():
         statement = (update(Payment)
-                     .where(Payment.id == payment_id, Payment.resolution_status == "unknown", Payment.status == "pending")
+                     .where(Payment.id == payment_id, Payment.status == "pending",
+                            or_(Payment.provider_payment_id.is_(None), Payment.provider_payment_id == provider_id))
                      .values(provider_payment_id=provider_id,
                              confirmation_url=func.coalesce(confirmation_url, Payment.confirmation_url),
                              status=status, resolution_status="known", updated_at=func.now())
