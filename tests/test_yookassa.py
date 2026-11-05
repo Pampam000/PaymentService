@@ -18,7 +18,8 @@ class YooKassaTests(unittest.TestCase):
         def respond(request):
             requests.append(request)
             return httpx.Response(200, json={
-                "id": "provider-1", "amount": {"value": "1.01", "currency": "RUB"},
+                "id": "provider-1", "status": "pending", "metadata": {"payment_id": str(payment_id)},
+                "amount": {"value": "1.01", "currency": "RUB"},
                 "confirmation": {"confirmation_url": "https://yookassa.ru/pay/one"},
             })
 
@@ -40,6 +41,29 @@ class YooKassaTests(unittest.TestCase):
         self.assertIn(b'"value":"1.01"', requests[0].content)
         self.assertIn(b'"capture":true', requests[0].content)
         self.assertIn(b'"return_url":"https://example.com/return"', requests[0].content)
+
+    def test_repeated_create_accepts_paid_payment_without_confirmation(self) -> None:
+        payment_id = uuid4()
+        payment = ProviderPaymentCreate(id=payment_id, order_id=uuid4(), amount_kopecks=101,
+                                        plan_id="basic", period="month")
+        response = {
+            "id": "provider-1", "status": "succeeded", "metadata": {"payment_id": str(payment_id)},
+            "amount": {"value": "1.01", "currency": "RUB"},
+        }
+        with patch("payment_service.adapters.yookassa.settings") as settings, patch(
+            "payment_service.adapters.yookassa._request", new=AsyncMock(return_value=response),
+        ):
+            settings.payment_return_url = "https://example.com/return"
+            result = asyncio.run(yookassa.create_payment(payment))
+        self.assertEqual((result.status, result.confirmation_url), ("succeeded", None))
+
+        response["metadata"]["payment_id"] = str(uuid4())
+        with patch("payment_service.adapters.yookassa.settings") as settings, patch(
+            "payment_service.adapters.yookassa._request", new=AsyncMock(return_value=response),
+        ):
+            settings.payment_return_url = "https://example.com/return"
+            with self.assertRaises(yookassa.YooKassaError):
+                asyncio.run(yookassa.create_payment(payment))
 
     def test_provider_error_hides_response(self) -> None:
         real_client = httpx.AsyncClient

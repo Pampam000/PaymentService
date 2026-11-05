@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+__pycache__
+*.egg-info
+.env
+.deploy.env
+*.dump
+tests
+scripts
+.docs
+README.md
+PLAN.md

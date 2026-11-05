@@ -21,7 +21,9 @@ async def run_one(refund_id: UUID) -> str:
     log_operation("refund_reconciliation", result, local_id=refund_id,
                   provider_id=details[0].provider_refund_id if details else None,
                   error_class=result if result in ("unknown", "manual_review") else None)
-    return result
+    refund = details[0] if details else None
+    return (f"{refund_id} outcome={result} status={refund.status if refund else '-'} "
+            f"resolution_status={refund.resolution_status if refund else '-'}")
 
 
 def main() -> None:
@@ -32,7 +34,7 @@ def main() -> None:
     if args.run:
         async def run() -> None:
             for refund_id in await list_reconciliation_candidates():
-                print(refund_id, await run_one(refund_id))
+                print(await run_one(refund_id))
         asyncio.run(run())
     elif args.refund_id is None:
         for refund_id in asyncio.run(list_pending_refunds()):

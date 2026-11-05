@@ -49,6 +49,18 @@ class ReconciliationTests(unittest.TestCase):
             self.assertEqual(asyncio.run(reconcile_payment(self.payment_id)), "unknown")
         finish.assert_not_awaited()
 
+    def test_paid_replay_confirms_terminal_status(self) -> None:
+        create = AsyncMock(return_value=ProviderPaymentResult(
+            provider_id="provider-1", status="succeeded",
+        ))
+        with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=SimpleNamespace(**self.payment))), patch(
+            "payment_service.services.reconciliation.claim_reconciliation", new=AsyncMock(return_value=SimpleNamespace(**self.payment))
+        ), patch("payment_service.services.reconciliation.finish_reconciliation", new=AsyncMock()) as finish, patch(
+            "payment_service.services.reconciliation.get_adapter", return_value=SimpleNamespace(create_payment=create)
+        ):
+            self.assertEqual(asyncio.run(reconcile_payment(self.payment_id)), "resolved")
+        self.assertEqual(finish.await_args.args[-1], "succeeded")
+
     def test_expired_key_requires_manual_review(self) -> None:
         self.payment["provider_create_started_at"] -= timedelta(hours=25)
         with patch("payment_service.services.reconciliation.get_payment", new=AsyncMock(return_value=SimpleNamespace(**self.payment))), patch(
@@ -145,6 +157,41 @@ class ReconciliationTests(unittest.TestCase):
                 with patch("payment_service.services.reconciliation.get_adapter", return_value=SimpleNamespace(get_payment=get)):
                     self.assertEqual(await reconcile_payment(self.payment_id), "resolved")
                 self.assertEqual((await get_payment(self.payment_id)).status, "succeeded")
+                async with session_factory()() as session:
+                    events = (await session.scalars(select(OutboxEvent).where(
+                        OutboxEvent.payload["payment_id"].as_string() == str(self.payment_id)
+                    ))).all()
+                    self.assertEqual(len(events), 1)
+            finally:
+                async with session_factory()() as session, session.begin():
+                    await session.execute(delete(OutboxEvent).where(
+                        OutboxEvent.payload["payment_id"].as_string() == str(self.payment_id)
+                    ))
+                    await session.execute(delete(Payment).where(Payment.id == self.payment_id))
+
+        asyncio.run(run())
+
+    def test_paid_replay_without_provider_id_creates_one_event(self) -> None:
+        if not asyncio.run(database_available()):
+            self.skipTest("Local PostgreSQL is unavailable")
+
+        async def run() -> None:
+            async with session_factory()() as session, session.begin():
+                session.add(Payment(
+                    id=self.payment_id, order_id=self.payment["order_id"], amount_kopecks=101,
+                    idempotency_key=str(uuid4()), request_fingerprint="f" * 64,
+                    resolution_status="unknown", provider_create_started_at=self.payment["provider_create_started_at"],
+                    plan_id="basic", period="month",
+                ))
+            try:
+                create = AsyncMock(return_value=ProviderPaymentResult(
+                    provider_id="provider-" + str(self.payment_id), status="succeeded",
+                ))
+                with patch("payment_service.services.reconciliation.get_adapter",
+                           return_value=SimpleNamespace(create_payment=create)):
+                    self.assertEqual(await reconcile_payment(self.payment_id), "resolved")
+                payment = await get_payment(self.payment_id)
+                self.assertEqual((payment.status, payment.resolution_status), ("succeeded", "known"))
                 async with session_factory()() as session:
                     events = (await session.scalars(select(OutboxEvent).where(
                         OutboxEvent.payload["payment_id"].as_string() == str(self.payment_id)

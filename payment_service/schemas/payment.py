@@ -107,7 +107,8 @@ class ProviderRefundCreate(BaseModel):
 
 class ProviderPaymentResult(BaseModel):
     provider_id: str = Field(min_length=1, max_length=128)
-    confirmation_url: str = Field(min_length=1, max_length=2048, pattern=r"^https://")
+    confirmation_url: str | None = Field(default=None, max_length=2048, pattern=r"^https://")
+    status: Literal["pending", "waiting_for_capture", "succeeded", "canceled"] = "pending"
 
 
 class ProviderPaymentStatus(BaseModel):

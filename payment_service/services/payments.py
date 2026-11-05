@@ -3,7 +3,7 @@ from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from payment_service.repositories.payments import claim_provider_create, find_by_key, finish_provider_create, get_payment, reserve_payment
+from payment_service.repositories.payments import claim_provider_create, find_by_key, finish_reconciliation, get_payment, reserve_payment
 from payment_service.services.orders import get_order_snapshot
 from payment_service.adapters import get_adapter
 from payment_service.adapters.base import ProviderError
@@ -51,7 +51,8 @@ async def create_or_get_payment(key: str, order_id: UUID) -> tuple[PaymentRecord
         return await find_by_key(key), False
     try:
         provider = await get_adapter().create_payment(ProviderPaymentCreate.model_validate(payment))
-        payment = await finish_provider_create(payment.id, provider.provider_id, provider.confirmation_url)
+        payment = await finish_reconciliation(payment.id, provider.provider_id, provider.confirmation_url,
+                                              "pending" if provider.status == "waiting_for_capture" else provider.status)
     except ProviderError:
         payment = await find_by_key(key)
         return payment, False

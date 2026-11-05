@@ -1,0 +1,67 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: payment_service
+      POSTGRES_USER: payment_service
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      retries: 12
+
+  migrate:
+    image: ${PAYMENT_IMAGE:?Set PAYMENT_IMAGE}
+    profiles: [migration]
+    environment: &app_env
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+      YOO_MODE: ${YOO_MODE:?Set YOO_MODE}
+      YOO_TEST_SHOP_ID: ${YOO_TEST_SHOP_ID:-}
+      YOO_TEST_SECRET_KEY: ${YOO_TEST_SECRET_KEY:-}
+      YOO_LIVE_SHOP_ID: ${YOO_LIVE_SHOP_ID:-}
+      YOO_LIVE_SECRET_KEY: ${YOO_LIVE_SECRET_KEY:-}
+      PAYMENT_RETURN_URL: ${PAYMENT_RETURN_URL:?Set PAYMENT_RETURN_URL}
+      BACKEND_TOKEN: ${BACKEND_TOKEN:?Set BACKEND_TOKEN}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN}
+      BACKEND_BASE_URL: ${BACKEND_BASE_URL:?Set BACKEND_BASE_URL}
+      ORDER_LOOKUP_TOKEN: ${ORDER_LOOKUP_TOKEN:?Set ORDER_LOOKUP_TOKEN}
+      PAYMENT_EVENT_TOKEN: ${PAYMENT_EVENT_TOKEN:?Set PAYMENT_EVENT_TOKEN}
+    command: ["python", "-m", "payment_service.migrate", "upgrade"]
+    networks: [data]
+    depends_on:
+      db: {condition: service_healthy}
+
+  app:
+    image: ${PAYMENT_IMAGE:?Set PAYMENT_IMAGE}
+    environment: *app_env
+    networks: [data, billing]
+    depends_on:
+      db: {condition: service_healthy}
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2.10-alpine
+    environment:
+      PAYMENT_DOMAIN: ${PAYMENT_DOMAIN:?Set PAYMENT_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    networks: [billing]
+    depends_on: [app]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+
+networks:
+  data:
+    internal: true
+  billing:
+    external: true
+    name: payment-billing

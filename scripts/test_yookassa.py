@@ -1,4 +1,4 @@
-"""Local test-shop flow without Backend: create, payment-status, refund, refund-status."""
+"""Local test-shop flow without Backend, including simulated lost payment response."""
 
 import argparse
 import asyncio
@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from payment_service.adapters import get_adapter
 from payment_service.core.config import settings
 from payment_service.repositories.payments import (
-    claim_provider_create, finish_provider_create, get_payment, reserve_payment,
+    claim_provider_create, finish_reconciliation, get_payment, reserve_payment,
 )
 from payment_service.repositories.refunds import get_refund, reserve_full_refund
 from payment_service.repositories.webhooks import confirm_status
@@ -23,7 +23,7 @@ def require_test_shop() -> None:
         raise SystemExit("DATABASE_URL and test YooKassa credentials are required")
 
 
-async def create_payment(amount: int) -> None:
+async def create_payment(amount: int, *, simulate_lost_response: bool = False) -> None:
     order_id = uuid4()
     order = OrderSnapshot(
         order_id=order_id, user_id=uuid4(), plan_id="local-test", period="month",
@@ -34,7 +34,12 @@ async def create_payment(amount: int) -> None:
         raise RuntimeError("Could not reserve test payment")
     print(f"Payment ID: {payment.id}", flush=True)
     result = await get_adapter().create_payment(ProviderPaymentCreate.model_validate(payment))
-    await finish_provider_create(payment.id, result.provider_id, result.confirmation_url)
+    if simulate_lost_response:
+        print("Simulated lost response; local payment remains pending + unknown")
+        print(f"Confirmation URL: {result.confirmation_url}")
+        return
+    await finish_reconciliation(payment.id, result.provider_id, result.confirmation_url,
+                                "pending" if result.status == "waiting_for_capture" else result.status)
     print(f"Confirmation URL: {result.confirmation_url}")
 
 
@@ -50,7 +55,10 @@ async def payment_status(payment_id: UUID) -> None:
         raise SystemExit("Provider payment does not match the local payment")
     if result.status in ("succeeded", "canceled"):
         await confirm_status("payment." + result.status, result.provider_id, result.status)
-    print(f"Payment status: {(await get_payment(payment_id)).status}")
+    payment = await get_payment(payment_id)
+    print(f"Payment status: {payment.status}")
+    if payment.confirmation_url and payment.status == "pending":
+        print(f"Confirmation URL: {payment.confirmation_url}")
 
 
 async def create_refund(payment_id: UUID) -> None:
@@ -75,15 +83,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Exercise PaymentService with a YooKassa test shop, without Backend")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("create").add_argument("amount_kopecks", type=int)
+    commands.add_parser("create-unknown").add_argument("amount_kopecks", type=int)
     commands.add_parser("payment-status").add_argument("payment_id", type=UUID)
     commands.add_parser("refund").add_argument("payment_id", type=UUID)
     commands.add_parser("refund-status").add_argument("refund_id", type=UUID)
     args = parser.parse_args()
     require_test_shop()
-    if args.command == "create":
+    if args.command in ("create", "create-unknown"):
         if args.amount_kopecks <= 0:
             parser.error("amount_kopecks must be positive")
-        asyncio.run(create_payment(args.amount_kopecks))
+        asyncio.run(create_payment(args.amount_kopecks, simulate_lost_response=args.command == "create-unknown"))
     elif args.command == "payment-status":
         asyncio.run(payment_status(args.payment_id))
     elif args.command == "refund":

@@ -43,18 +43,17 @@ async def create_payment(payment: ProviderPaymentCreate) -> ProviderPaymentResul
         metadata={"order_id": str(payment.order_id), "payment_id": str(payment.id)},
     )
     result = await _request("POST", "payments", key=str(payment.id), payload=payload.model_dump(mode="json"))
-    amount = result.get("amount")
-    confirmation = result.get("confirmation")
+    try:
+        created = YooPaymentDetails.model_validate(result)
+    except ValidationError as exc:
+        raise YooKassaError("Invalid YooKassa payment") from exc
     expected = f"{payment.amount_kopecks // 100}.{payment.amount_kopecks % 100:02d}"
-    if not isinstance(amount, dict) or amount.get("value") != expected or amount.get("currency") != "RUB":
-        raise YooKassaError("Invalid payment amount")
-    if not isinstance(confirmation, dict):
+    if created.amount.value != expected or created.metadata.payment_id != payment.id:
+        raise YooKassaError("Invalid payment amount or metadata")
+    url = created.confirmation.confirmation_url if created.confirmation else None
+    if created.status == "pending" and not url:
         raise YooKassaError("Invalid payment confirmation")
-    provider_id = result.get("id")
-    url = confirmation.get("confirmation_url")
-    if not isinstance(provider_id, str) or not provider_id or not isinstance(url, str) or not url.startswith("https://"):
-        raise YooKassaError("Invalid payment confirmation")
-    return ProviderPaymentResult(provider_id=provider_id, confirmation_url=url)
+    return ProviderPaymentResult(provider_id=created.id, confirmation_url=url, status=created.status)
 
 
 async def get_payment(provider_id: str) -> ProviderPaymentStatus:

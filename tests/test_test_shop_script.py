@@ -22,6 +22,34 @@ class TestShopScriptTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 test_yookassa.require_test_shop()
 
+    def test_lost_response_leaves_unknown_payment(self) -> None:
+        if not asyncio.run(database_available()):
+            self.skipTest("Local PostgreSQL is unavailable")
+
+        async def run() -> None:
+            output = io.StringIO()
+            payment_id = None
+            try:
+                with redirect_stdout(output):
+                    await test_yookassa.create_payment(101, simulate_lost_response=True)
+                payment_id = UUID(output.getvalue().split("Payment ID: ")[1].splitlines()[0])
+                self.assertIn("Confirmation URL: https://example.test/checkout", output.getvalue())
+                async with session_factory()() as session:
+                    payment = await session.get(Payment, payment_id)
+                    self.assertEqual((payment.status, payment.resolution_status), ("pending", "unknown"))
+                    self.assertIsNone(payment.provider_payment_id)
+            finally:
+                if payment_id:
+                    async with session_factory()() as session, session.begin():
+                        await session.execute(delete(Payment).where(Payment.id == payment_id))
+
+        adapter = SimpleNamespace(create_payment=AsyncMock(return_value=ProviderPaymentResult(
+            provider_id="script-unknown", confirmation_url="https://example.test/checkout",
+        )))
+        with patch("scripts.test_yookassa.get_adapter", return_value=adapter):
+            asyncio.run(run())
+        adapter.create_payment.assert_awaited_once()
+
     def test_flow_uses_local_payment_without_backend(self) -> None:
         if not asyncio.run(database_available()):
             self.skipTest("Local PostgreSQL is unavailable")
@@ -76,3 +104,20 @@ class TestShopScriptTests(unittest.TestCase):
             "payment_service.services.refunds.get_adapter", return_value=adapter,
         ):
             asyncio.run(run())
+
+    def test_pending_payment_status_prints_confirmation_url(self) -> None:
+        from uuid import uuid4
+
+        payment_id = uuid4()
+        payment = SimpleNamespace(id=payment_id, provider_payment_id="provider-id",
+                                  amount_kopecks=101, status="pending",
+                                  confirmation_url="https://example.test/checkout")
+        adapter = SimpleNamespace(get_payment=AsyncMock(return_value=ProviderPaymentStatus(
+            provider_id="provider-id", payment_id=payment_id, status="pending", amount_kopecks=101,
+        )))
+        output = io.StringIO()
+        with patch("scripts.test_yookassa.get_payment", new=AsyncMock(return_value=payment)), patch(
+            "scripts.test_yookassa.get_adapter", return_value=adapter,
+        ), redirect_stdout(output):
+            asyncio.run(test_yookassa.payment_status(payment_id))
+        self.assertIn("Confirmation URL: https://example.test/checkout", output.getvalue())

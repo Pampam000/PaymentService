@@ -43,15 +43,6 @@ async def claim_provider_create(payment_id) -> bool:
         return (await session.execute(statement)).scalar_one_or_none() is not None
 
 
-async def finish_provider_create(payment_id, provider_id: str, confirmation_url: str) -> PaymentRecord:
-    async with session_factory()() as session, session.begin():
-        statement = (update(Payment).where(Payment.id == payment_id)
-                     .values(provider_payment_id=provider_id, confirmation_url=confirmation_url,
-                             resolution_status="known", updated_at=func.now())
-                     .returning(Payment))
-        return as_record((await session.execute(statement)).scalar_one())
-
-
 async def claim_reconciliation(payment_id) -> PaymentRecord | None:
     async with session_factory()() as session, session.begin():
         statement = (update(Payment)

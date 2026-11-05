@@ -1,0 +1,7 @@
+{$PAYMENT_DOMAIN} {
+    @public path /webhooks/yookassa /health/live /health/ready
+    handle @public {
+        reverse_proxy app:8002
+    }
+    respond 404
+}

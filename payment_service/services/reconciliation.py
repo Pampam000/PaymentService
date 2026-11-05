@@ -42,7 +42,8 @@ async def reconcile_payment(payment_id: UUID) -> str:
                                         "pending" if result.status == "waiting_for_capture" else result.status)
         else:
             result = await get_adapter().create_payment(ProviderPaymentCreate.model_validate(payment))
-            await finish_reconciliation(payment_id, result.provider_id, result.confirmation_url, "pending")
+            await finish_reconciliation(payment_id, result.provider_id, result.confirmation_url,
+                                        "pending" if result.status == "waiting_for_capture" else result.status)
     except ProviderError:
         return "unknown"
     return "resolved"
