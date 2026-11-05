@@ -11,6 +11,26 @@ from payment_service.schemas.payment import ProviderPaymentCreate, ProviderRefun
 
 
 class YooKassaTests(unittest.TestCase):
+    def test_payment_amounts_keep_two_decimal_places(self) -> None:
+        for kopecks, expected in ((1, "0.01"), (99, "0.99"), (100, "1.00"), (101, "1.01"), (12345, "123.45")):
+            with self.subTest(kopecks=kopecks):
+                payment = ProviderPaymentCreate(
+                    id=uuid4(), order_id=uuid4(), amount_kopecks=kopecks,
+                    plan_id="basic", period="month",
+                )
+                response = {
+                    "id": "provider-1", "status": "pending",
+                    "metadata": {"payment_id": str(payment.id)},
+                    "amount": {"value": expected, "currency": "RUB"},
+                    "confirmation": {"confirmation_url": "https://yookassa.ru/pay/one"},
+                }
+                with patch("payment_service.adapters.yookassa.settings") as settings, patch(
+                    "payment_service.adapters.yookassa._request", new=AsyncMock(return_value=response),
+                ) as request:
+                    settings.payment_return_url = "https://example.com/return"
+                    asyncio.run(yookassa.create_payment(payment))
+                self.assertEqual(request.await_args.kwargs["payload"]["amount"]["value"], expected)
+
     def test_create_uses_exact_kopecks_and_local_idempotency_key(self) -> None:
         payment_id = uuid4()
         requests = []
